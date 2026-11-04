@@ -1,0 +1,12 @@
+node_modules/
+.next/
+.miftan-data/
+.env*
+!.env.example
+*.tsbuildinfo
+next-env.d.ts
+playwright-report/
+test-results/
+coverage/
+.venv/
+__pycache__/
