@@ -1,0 +1,69 @@
+name: miftan
+services:
+  db:
+    image: postgres:17.8-bookworm@sha256:45e40832755b7133da62e701ee496d65afc5e4527c8ff5446c2f3bdd11bc58e3
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: miftan
+      POSTGRES_USER: miftan
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes: [database:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U miftan -d miftan"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  web:
+    build: .
+    restart: unless-stopped
+    ports: ["127.0.0.1:${PORT:-3000}:3000"]
+    environment:
+      PGHOST: db
+      PGDATABASE: miftan
+      PGUSER: miftan
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@localhost}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      IMAGE_ROOT: /data/images
+    volumes: [images:/data/images:ro]
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  crawler:
+    build: ./crawler
+    restart: unless-stopped
+    shm_size: 1gb
+    environment:
+      PGHOST: db
+      PGDATABASE: miftan
+      PGUSER: miftan
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      FACEBOOK_EMAIL: ${FACEBOOK_EMAIL:-}
+      FACEBOOK_PASSWORD: ${FACEBOOK_PASSWORD:-}
+      CRAWL_INTERVAL_MINUTES: ${CRAWL_INTERVAL_MINUTES:-30}
+      MAX_SCROLLS: ${MAX_SCROLLS:-1000}
+      DISPLAY: ":99"
+    ports: ["127.0.0.1:6080:6080"]
+    volumes: [images:/data/images, browser:/data/browser]
+    depends_on:
+      web: { condition: service_healthy }
+    healthcheck:
+      test: [CMD, python, health.py]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+volumes:
+  database:
+  images:
+  browser:

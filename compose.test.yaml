@@ -1,0 +1,30 @@
+# Isolated integration database and image volume; no Facebook session is mounted.
+services:
+  test-web:
+    image: miftan-web
+    profiles: [test]
+    ports: ["127.0.0.1:3001:3000"]
+    environment:
+      PGHOST: db
+      PGDATABASE: miftan_test
+      PGUSER: miftan
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@localhost}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      APP_URL: http://localhost:3001
+      IMAGE_ROOT: /data/images
+    volumes: [test-images:/data/images:ro]
+    depends_on:
+      db: { condition: service_healthy }
+  test-crawler:
+    image: miftan-crawler
+    profiles: [test]
+    environment:
+      PGHOST: db
+      PGDATABASE: miftan_test
+      PGUSER: miftan
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes: [test-images:/data/images]
+    command: [python, -m, unittest, -v, test_parser, test_pipeline, test_facebook]
+volumes:
+  test-images:
