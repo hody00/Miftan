@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from playwright.sync_api import sync_playwright
-from facebook import Facebook, CollectionIncomplete, PHOTO_IMAGES
+from facebook import Facebook, CollectionIncomplete, PHOTO_IMAGES, LoginRequired
 
 
 class FixturePage:
@@ -39,6 +39,14 @@ class CollectionTests(unittest.TestCase):
     def test_missing_group_heading_does_not_use_action_label(self):
         self.page.set_content('<h1>Facebook</h1><a>הצגת הקבוצה</a>')
         self.assertIsNone(self.fb.group_name())
+    def test_login_requires_authenticated_session(self):
+        self.fb.context.cookies=lambda url:[]
+        self.page.set_content('<main>Facebook</main>')
+        with self.assertRaises(LoginRequired):self.fb.login()
+        self.fb.context.cookies=lambda url:[{'name':'c_user','value':'fixture-account'}]
+        self.fb.login()
+        self.page.set_content('<input name="pass">')
+        with self.assertRaises(LoginRequired):self.fb.login()
     def article(self, pid, date):
         return f'''<div role="article"><a href="https://www.facebook.com/groups/123/posts/{pid}/">date</a>
           <time datetime="{date}"></time><div data-ad-preview="message">Property {pid}</div></div>'''

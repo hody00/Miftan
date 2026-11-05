@@ -29,6 +29,8 @@ type Data = {
     message: string;
     heartbeat: string;
     recovery_until: string | null;
+    facebook_connected: boolean;
+    disconnect_requested: boolean;
   };
   removals: { id: string; listing_id: string; reason: string }[];
   quarantine: { id: string; reason: string; created_at: string }[];
@@ -100,6 +102,7 @@ export default function Admin() {
       setBusy(false);
     }
   }
+  const facebookReady=!!data?.state.facebook_connected && !data?.state.disconnect_requested && !data?.state.recovery_until;
   return (
     <>
       <div className="admin-toolbar">
@@ -121,6 +124,56 @@ export default function Admin() {
         <p role="status">טוענים את לוח הניהול…</p>
       ) : (
         <>
+          <section className="panel crawler-panel">
+            <div>
+              <h2>1. התחברות לפייסבוק</h2>
+              <p>{facebookReady ? "מחובר לפייסבוק" : "יש להתחבר לפייסבוק לפני ניהול מקורות ואיסוף מודעות"}</p>
+              <p>
+                {data.state.message || "האוסף פועל ברקע עבור מקורות שאושרו."}
+              </p>
+              <small>
+                עדכון אחרון:{" "}
+                {new Date(data.state.heartbeat).toLocaleString("he-IL")}
+              </small>
+            </div>
+            <div className="actions">
+              <button
+                disabled={busy || data.state.disconnect_requested || !!data.state.recovery_until}
+                className="button secondary small"
+                onClick={() => act({ action: "job", kind: "recover" })}
+              >
+                פתיחת חלון התחברות
+              </button>
+              <button className="button secondary small" disabled={busy || data.state.disconnect_requested || (!data.state.facebook_connected && !data.state.recovery_until)} onClick={()=>act({action:'disconnect'})}>
+                {data.state.disconnect_requested ? 'מנתק…' : 'ניתוק מפייסבוק / החלפת חשבון'}
+              </button>
+              {data.state.recovery_until &&
+                new Date(data.state.recovery_until) > new Date() && (
+                  <><a
+                    className="button small"
+                    href="http://localhost:6080/vnc.html?autoconnect=true&resize=scale"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    לחלון המקומי ↗
+                  </a><button className="button secondary small" disabled={busy} onClick={()=>act({action:'resume'})}>סיימתי להתחבר — בדיקת החיבור</button></>
+                )}
+              <button
+                disabled={busy || !facebookReady}
+                className="button small"
+                onClick={() => act({ action: "job", kind: "discover" })}
+              >
+                גילוי קבוצות
+              </button>
+              <button
+                disabled={busy || !facebookReady}
+                className="button secondary small"
+                onClick={() => act({ action: "job", kind: "sync" })}
+              >
+                סנכרון כעת
+              </button>
+            </div>
+          </section>
           <div className="stats">
             <div>
               <span>בתים פעילים</span>
@@ -145,52 +198,6 @@ export default function Admin() {
               </b>
             </div>
           </div>
-          <section className="panel crawler-panel">
-            <div>
-              <h2>חיבור לפייסבוק</h2>
-              <p>
-                {data.state.message || "האוסף פועל ברקע עבור מקורות שאושרו."}
-              </p>
-              <small>
-                עדכון אחרון:{" "}
-                {new Date(data.state.heartbeat).toLocaleString("he-IL")}
-              </small>
-            </div>
-            <div className="actions">
-              <button
-                disabled={busy}
-                className="button secondary small"
-                onClick={() => act({ action: "job", kind: "recover" })}
-              >
-                פתיחת חלון התחברות
-              </button>
-              {data.state.recovery_until &&
-                new Date(data.state.recovery_until) > new Date() && (
-                  <><a
-                    className="button small"
-                    href="http://localhost:6080/vnc.html?autoconnect=true&resize=scale"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    לחלון המקומי ↗
-                  </a><button className="button secondary small" disabled={busy} onClick={()=>act({action:'resume'})}>סיימתי להתחבר — חזרה לאיסוף</button></>
-                )}
-              <button
-                disabled={busy}
-                className="button small"
-                onClick={() => act({ action: "job", kind: "discover" })}
-              >
-                גילוי קבוצות
-              </button>
-              <button
-                disabled={busy}
-                className="button secondary small"
-                onClick={() => act({ action: "job", kind: "sync" })}
-              >
-                סנכרון כעת
-              </button>
-            </div>
-          </section>
           <div className="tabs" role="tablist" aria-label="ניהול">
             {[
               ["sources", "מקורות"],
@@ -209,8 +216,8 @@ export default function Admin() {
             ))}
           </div>
           {tab === "sources" && (
-            <section className="panel">
-              <h2>המקורות שלכם</h2>
+            <fieldset className="panel" disabled={busy || !facebookReady}>
+              <h2>2. המקורות שלכם</h2>
               <p className="muted">
                 גילוי קבוצות אינו מפעיל איסוף. אישור מקור כולל אישור לפרסום
                 תוכנו באתר הציבורי.
@@ -291,7 +298,7 @@ export default function Admin() {
                   </div>
                 ))
               )}
-            </section>
+            </fieldset>
           )}
           {tab === "listings" && (
             <section className="panel">

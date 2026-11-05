@@ -80,14 +80,9 @@ class Facebook:
         if self.page.locator('iframe[src*="captcha"], input[name="approvals_code"]').count():raise LoginRequired('Facebook requires account verification')
     def login(self):
         self.page.goto('https://www.facebook.com/',wait_until='domcontentloaded',timeout=60000)
-        if self.page.locator('input[name="email"]').count():
-            email=os.getenv('FACEBOOK_EMAIL');password=os.getenv('FACEBOOK_PASSWORD')
-            if not email or not password:raise LoginRequired('Configure credentials or open the local recovery browser')
-            self.page.locator('input[name="email"]').fill(email)
-            self.page.locator('input[name="pass"]').fill(password)
-            self.page.locator('button[name="login"]').click()
-            self.page.wait_for_timeout(5000)
         self.check()
+        if not any(cookie['name']=='c_user' and cookie['value'] for cookie in self.context.cookies('https://www.facebook.com/')):
+            raise LoginRequired('Connect Facebook using the local login window')
     def discover(self):
         self.page.goto('https://www.facebook.com/groups/joins/',wait_until='domcontentloaded',timeout=60000)
         found={};unchanged=0

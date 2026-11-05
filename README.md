@@ -24,7 +24,7 @@ Production starts with **no sample listings**. Search, favorites, details, and a
 5. Approve only sources whose property content you may publish publicly. Membership alone is not publication approval.
 6. Click **סנכרון כעת**, or wait for the scheduled run. Review ambiguous listings in **מודעות**.
 
-For automatic normal login, set `FACEBOOK_EMAIL` and `FACEBOOK_PASSWORD` in `.env`, then run `docker compose up -d crawler`. These credentials never enter the web container. The crawler reuses its private browser-profile volume and pauses on verification challenges. It does not bypass them. A database advisory lock prevents two collectors from using the same profile concurrently.
+Facebook login is the first step in administration. Discovery, source changes, manual sync and scheduled collection require a verified Facebook session. Use **ניתוק מפייסבוק / החלפת חשבון** to stop collection and clear the session, then open the login window for the new account. Disconnect prepares a fresh browser profile; environment credentials are never used to sign back in automatically. The crawler reuses its private browser-profile volume and pauses on verification challenges. It does not bypass them. A database advisory lock prevents two collectors from using the same profile concurrently.
 
 The collector supports Hebrew and English absolute timestamp tooltips. The rendered UI may change or restrict access. Adapter failures are visible in administration. Posts without stable IDs or absolute publication dates are quarantined.
 

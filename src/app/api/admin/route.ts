@@ -34,6 +34,7 @@ const action = z.discriminatedUnion("action", [
   }),
   z.object({ action: z.literal("removal"), id: z.uuid() }),
   z.object({ action: z.literal("resume") }),
+  z.object({ action: z.literal("disconnect") }),
 ]);
 export async function GET(request:Request) {
   if (!(await admin()))
@@ -66,6 +67,20 @@ export async function POST(request: Request) {
     return Response.json({ error: "נתונים לא תקינים" }, { status: 400 });
   const a = parsed.data;
   try {
+    if (a.action === 'disconnect') {
+      await query("UPDATE crawler_state SET facebook_connected=false,disconnect_requested=true,recovery_until=NULL,message='מנתק את חשבון הפייסבוק…' WHERE id=1");
+      return Response.json({ok:true});
+    }
+    if (a.action === 'source' || a.action === 'approve' || (a.action === 'job' && a.kind !== 'recover')) {
+      const [connection]=await query("SELECT facebook_connected,disconnect_requested,recovery_until FROM crawler_state WHERE id=1");
+      if (!connection?.facebook_connected || connection.disconnect_requested || connection.recovery_until)
+        return Response.json({error:'יש להתחבר לפייסבוק לפני ניהול מקורות או איסוף'}, {status:409});
+    }
+    if (a.action === 'job' && a.kind === 'recover') {
+      const [connection]=await query("SELECT disconnect_requested,recovery_until FROM crawler_state WHERE id=1");
+      if(connection?.disconnect_requested || connection?.recovery_until)
+        return Response.json({error:'יש להמתין לסיום הפעולה הנוכחית'}, {status:409});
+    }
     if (a.action === "resume") await query("UPDATE crawler_state SET recovery_until=now() WHERE id=1");
     if (a.action === "source") {
       const url = new URL(a.url);

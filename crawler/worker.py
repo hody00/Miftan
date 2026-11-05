@@ -3,6 +3,9 @@ import os
 import signal
 import subprocess
 import time
+import uuid
+
+class ConnectionActionRequested(Exception): pass
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 import psycopg
@@ -29,6 +32,8 @@ def run():
         if stop:raise InterruptedError()
         if force or time.monotonic()-last_beat>10:
             conn.execute('UPDATE crawler_state SET heartbeat=now() WHERE id=1')
+            if current and current['kind']!='recover' and conn.execute("SELECT disconnect_requested OR EXISTS(SELECT 1 FROM jobs WHERE kind='recover' AND status='queued') AS interrupt FROM crawler_state WHERE id=1").fetchone()['interrupt']:
+                raise ConnectionActionRequested()
             if current:conn.execute("UPDATE jobs SET lease_until=now()+interval '2 minutes' WHERE id=%s AND status='running'",(current['id'],))
             Path('/tmp/miftan-heartbeat').touch();last_beat=time.monotonic()
     def state(status,message=None):conn.execute('UPDATE crawler_state SET status=%s,message=%s,heartbeat=now() WHERE id=1',(status,message));tick(True)
@@ -37,28 +42,59 @@ def run():
     try:
         time.sleep(1)
         with sync_playwright() as p:
-            context=p.chromium.launch_persistent_context('/data/browser',headless=False,viewport={'width':1440,'height':1000},locale='en-US',timezone_id='Asia/Jerusalem',accept_downloads=False,args=['--disable-dev-shm-usage'])
+            def launch():
+                profile=conn.execute('SELECT browser_profile FROM crawler_state WHERE id=1').fetchone()['browser_profile']
+                directory='/data/browser' if profile=='legacy' else '/data/browser/accounts/'+str(uuid.UUID(profile))
+                return p.chromium.launch_persistent_context(directory,headless=False,viewport={'width':1440,'height':1000},locale='en-US',timezone_id='Asia/Jerusalem',accept_downloads=False,args=['--disable-dev-shm-usage'])
+            context=launch()
+            # Recovery viewer processes do not survive a worker restart.
+            conn.execute('UPDATE crawler_state SET recovery_until=NULL,facebook_connected=false WHERE id=1')
             fb=Facebook(context,tick,lambda external_id,name:conn.execute('UPDATE sources SET name=%s WHERE external_id=%s',(name,external_id)))
-            state('idle','ממתין למקורות מאושרים או לגילוי קבוצות')
+            def verify():
+                try:
+                    fb.login()
+                    conn.execute('UPDATE crawler_state SET facebook_connected=true WHERE id=1 AND NOT disconnect_requested')
+                    state('idle','מחובר לפייסבוק. אפשר לגלות קבוצות ולהתחיל לאסוף.')
+                except LoginRequired:
+                    conn.execute('UPDATE crawler_state SET facebook_connected=false WHERE id=1')
+                    state('needs_login','שלב 1: התחברו לפייסבוק לפני גילוי קבוצות ואיסוף.')
+            verify()
             while not stop:
                 tick()
+                connection=conn.execute('SELECT * FROM crawler_state WHERE id=1').fetchone()
+                if connection['disconnect_requested']:
+                    for proc in recovery:proc.terminate()
+                    for proc in recovery:proc.wait(timeout=10)
+                    recovery=[]
+                    context.clear_cookies()
+                    context.close()
+                    conn.execute("UPDATE jobs SET status='failed',error='Facebook disconnected',finished_at=now(),lease_until=NULL WHERE status IN ('queued','running')")
+                    conn.execute("UPDATE crawler_state SET browser_profile=%s,facebook_connected=false,recovery_until=NULL WHERE id=1",(str(uuid.uuid4()),))
+                    context=launch()
+                    fb=Facebook(context,tick,lambda external_id,name:conn.execute('UPDATE sources SET name=%s WHERE external_id=%s',(name,external_id)))
+                    conn.execute('UPDATE crawler_state SET disconnect_requested=false WHERE id=1')
+                    state('needs_login','פייסבוק נותק. אפשר להתחבר עכשיו לחשבון אחר.')
+                    retry_at=0
+                    continue
                 requested_end=conn.execute('SELECT recovery_until FROM crawler_state WHERE id=1').fetchone()['recovery_until'] if recovery else None
                 if recovery and (time.monotonic()>recovery_deadline or not requested_end or requested_end<=datetime.now(timezone.utc)):
                     for proc in recovery:proc.terminate()
                     for proc in recovery:proc.wait(timeout=10)
                     recovery=[];conn.execute('UPDATE crawler_state SET recovery_until=NULL WHERE id=1');retry_at=0
-                    state('idle','חלון השחזור נסגר; האוסף יבדוק את החיבור')
+                    verify()
                 if recovery:
                     time.sleep(1);continue
                 if time.monotonic()-last_cleanup>3600:
                     cleanup(conn);last_cleanup=time.monotonic()
                 conn.execute("UPDATE jobs SET status=CASE WHEN attempts>=3 THEN 'failed' ELSE 'queued' END,error='Worker lease expired',finished_at=CASE WHEN attempts>=3 THEN now() ELSE NULL END WHERE status='running' AND lease_until<now()")
-                if time.monotonic()>=retry_at:
+                connected=conn.execute('SELECT facebook_connected FROM crawler_state WHERE id=1').fetchone()['facebook_connected']
+                if connected and time.monotonic()>=retry_at:
                     conn.execute("INSERT INTO jobs(kind,source_id) SELECT 'sync',id FROM sources WHERE approved AND publication_confirmed AND next_run_at<=now() ON CONFLICT DO NOTHING")
-                current=conn.execute("WITH picked AS (SELECT id FROM jobs WHERE status='queued' AND (kind='recover' OR %s) ORDER BY (kind='recover') DESC,created_at FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE jobs SET status='running',attempts=attempts+1,lease_until=now()+interval '2 minutes' FROM picked WHERE jobs.id=picked.id RETURNING jobs.*",(time.monotonic()>=retry_at,)).fetchone()
+                current=conn.execute("WITH picked AS (SELECT id FROM jobs WHERE status='queued' AND (kind='recover' OR %s) ORDER BY (kind='recover') DESC,created_at FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE jobs SET status='running',attempts=attempts+1,lease_until=now()+interval '2 minutes' FROM picked WHERE jobs.id=picked.id RETURNING jobs.*",(connected and time.monotonic()>=retry_at,)).fetchone()
                 if not current:time.sleep(2);continue
                 try:
                     if current['kind']=='recover':
+                        conn.execute('UPDATE crawler_state SET facebook_connected=false WHERE id=1')
                         fb.page.goto('https://www.facebook.com/',wait_until='domcontentloaded',timeout=60000)
                         # Port only becomes active during an explicit admin-requested, timed recovery.
                         recovery=[subprocess.Popen(['x11vnc','-display',':99','-rfbport','5900','-localhost','-forever','-shared','-nopw'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL),subprocess.Popen(['websockify','--web=/usr/share/novnc/','6080','127.0.0.1:5900'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)]
@@ -89,7 +125,10 @@ def run():
                                 conn.execute("UPDATE sources SET last_success_at=now(),last_error=NULL,next_run_at=now()+(%s * interval '1 minute') WHERE id=%s",(max(5,int(os.getenv('CRAWL_INTERVAL_MINUTES','30'))),source['id']))
                         state('idle','האיסוף הושלם; ממתין לעדכון הבא')
                     conn.execute("UPDATE jobs SET status='completed',finished_at=now(),lease_until=NULL WHERE id=%s",(current['id'],));log('job_completed',kind=current['kind'])
+                except ConnectionActionRequested:
+                    conn.execute("UPDATE jobs SET status='queued',lease_until=NULL WHERE id=%s",(current['id'],))
                 except LoginRequired:
+                    conn.execute('UPDATE crawler_state SET facebook_connected=false WHERE id=1')
                     state('needs_login','נדרשת התחברות לפייסבוק. פתחו חלון שחזור מקומי ובצעו אימות.')
                     conn.execute("UPDATE jobs SET status='queued',error='Facebook login required',lease_until=NULL WHERE id=%s",(current['id'],));retry_at=time.monotonic()+1800
                 except InterruptedError:raise
